@@ -2792,6 +2792,8 @@ RELEASE_DIR := releases
 VERSION := $(shell cat VERSION.txt 2>/dev/null || echo "dev")
 # Release filenames include 'v' prefix to match git tag convention (v0.9.3)
 RELEASE_VERSION := v$(VERSION)
+# GitHub owner of the release Moonraker's type:web updater reads (release_info.json).
+HELIX_RELEASE_OWNER ?= redub23
 
 # Top-level asset dirs to include in release tarballs, derived from the shared
 # packaging manifest (scripts/gen-packaging-manifest.sh) minus test-data dirs
@@ -2911,7 +2913,7 @@ endef
 #              snapmaker-u1, x86)
 define write-release-info
 	@asset=$$(. scripts/lib/installer/platform.sh >/dev/null 2>&1 && helix_self_update_asset $(1)); \
-	echo "{\"project_name\":\"helixscreen\",\"project_owner\":\"prestonbrown\",\"version\":\"$(RELEASE_VERSION)\",\"asset_name\":\"$$asset\"}" > $(RELEASE_DIR)/helixscreen/release_info.json
+	echo "{\"project_name\":\"helixscreen\",\"project_owner\":\"$(HELIX_RELEASE_OWNER)\",\"version\":\"$(RELEASE_VERSION)\",\"asset_name\":\"$$asset\"}" > $(RELEASE_DIR)/helixscreen/release_info.json
 endef
 
 # Refuse to package a binary that carries the helixctl server.

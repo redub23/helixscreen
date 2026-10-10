@@ -86,13 +86,18 @@ using json = nlohmann::json;
 
 namespace {
 
+/// GitHub repository whose releases this build updates from (-DHELIX_UPDATE_REPO=...).
+#ifndef HELIX_UPDATE_REPO
+#define HELIX_UPDATE_REPO "redub23/helixscreen"
+#endif
+
 /// GitHub API URL for latest release
 constexpr const char* GITHUB_API_URL =
-    "https://api.github.com/repos/prestonbrown/helixscreen/releases/latest";
+    "https://api.github.com/repos/" HELIX_UPDATE_REPO "/releases/latest";
 
 /// GitHub API URL for all releases (beta channel uses this)
 constexpr const char* GITHUB_RELEASES_URL =
-    "https://api.github.com/repos/prestonbrown/helixscreen/releases";
+    "https://api.github.com/repos/" HELIX_UPDATE_REPO "/releases";
 
 /// HTTP request timeout in seconds
 constexpr int HTTP_TIMEOUT_SECONDS = 30;
@@ -281,8 +286,7 @@ std::string fetch_changelog_for_version(const std::string& version) {
     if (version.empty())
         return "";
 
-    std::string url =
-        "https://raw.githubusercontent.com/prestonbrown/helixscreen/main/CHANGELOG.md";
+    std::string url = "https://raw.githubusercontent.com/" HELIX_UPDATE_REPO "/main/CHANGELOG.md";
 
     spdlog::debug("[UpdateChecker] Fetching CHANGELOG.md for v{}", version);
     auto [status, body] = do_http_get(url);

@@ -1,0 +1,162 @@
+# Build the Creality K2 package of this fork and publish it as a GitHub release.
+#
+# Run it from the Actions tab ("K2 fork release" -> Run workflow) on main.
+# It versions the build as VERSION.txt plus ".fork.<run number>" (or
+# "-fork.<n>" on a plain release version), so every run sorts above the last
+# and above the upstream version it is based on. The release carries the same
+# two assets upstream publishes for the K2:
+#   helixscreen-k2.zip              bootstrap and Moonraker's type:web updater
+#   helixscreen-k2-v<ver>.tar.gz    HelixScreen's in-app updater
+#
+# The tag is created with GITHUB_TOKEN, which does not trigger other
+# workflows, so upstream's release.yml (tags v*) stays idle in this fork.
+name: K2 fork release
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: 'Release notes (optional)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: k2-fork-release
+  cancel-in-progress: false
+
+jobs:
+  build-k2:
+    name: Build and release K2 package
+    if: github.repository != 'prestonbrown/helixscreen'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v6
+      with:
+        submodules: false
+
+    - name: Initialize submodules
+      uses: ./.github/actions/init-submodules
+
+    - name: Set fork version
+      id: version
+      run: |
+        set -euo pipefail
+        base=$(tr -d '[:space:]' < VERSION.txt)
+        base=${base#v}
+        if [[ "$base" == *-* ]]; then
+          ver="${base}.fork.${GITHUB_RUN_NUMBER}"
+        else
+          ver="${base}-fork.${GITHUB_RUN_NUMBER}"
+        fi
+        echo "$ver" > VERSION.txt
+        echo "version=$ver" >> "$GITHUB_OUTPUT"
+        echo "Building v$ver (upstream base $base)"
+
+    - name: Free up disk space
+      run: |
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h /
+
+    - name: Add swap for the link peak
+      run: |
+        sudo fallocate -l 16G /swapfile-helix || sudo dd if=/dev/zero of=/swapfile-helix bs=1M count=16384
+        sudo chmod 600 /swapfile-helix
+        sudo mkswap /swapfile-helix
+        sudo swapon /swapfile-helix
+        free -h
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Restore ccache
+      uses: actions/cache@v4
+      with:
+        path: /tmp/.ccache-k2
+        key: ccache-k2-fork-${{ github.run_id }}
+        restore-keys: |
+          ccache-k2-fork-
+
+    - name: Configure ccache
+      run: |
+        mkdir -p /tmp/.ccache-k2
+        printf 'max_size = 2G\ncompression = true\n' > /tmp/.ccache-k2/ccache.conf
+
+    - name: Build K2 toolchain image
+      run: |
+        docker buildx build \
+          --cache-from type=gha,scope=toolchain-k2 \
+          --cache-to type=gha,mode=max,scope=toolchain-k2 \
+          --load \
+          -t helixscreen/toolchain-k2 \
+          -f docker/Dockerfile.k2 \
+          docker/
+
+    - name: Cross-compile for K2
+      env:
+        HELIX_PATCHES_FROM_CLEAN: '1'
+      run: |
+        docker run --rm \
+          -v "${{ github.workspace }}":/src \
+          -v /tmp/.ccache-k2:/root/.cache/ccache \
+          -e CCACHE_DIR=/root/.cache/ccache \
+          -e HELIX_PATCHES_FROM_CLEAN \
+          -w /src \
+          helixscreen/toolchain-k2 \
+          make PLATFORM_TARGET=k2 HELIX_PACKAGING=1 SKIP_OPTIONAL_DEPS=1 \
+            HELIX_RELEASE_OWNER=${{ github.repository_owner }} -j$(nproc)
+
+    - name: Fix build directory ownership
+      run: sudo chown -R $(id -u):$(id -g) build/
+
+    - name: Generate pre-rendered images
+      run: make venv-setup && make gen-all-images
+
+    - name: Package K2 release
+      run: make release-k2 HELIX_RELEASE_OWNER=${{ github.repository_owner }}
+
+    - name: Check release assets
+      id: assets
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        set -euo pipefail
+        zip=releases/helixscreen-k2.zip
+        tar=releases/helixscreen-k2-v${VERSION}.tar.gz
+        ls -la releases/
+        test -s "$zip"
+        test -s "$tar"
+        unzip -p "$zip" release_info.json 2>/dev/null || unzip -p "$zip" helixscreen/release_info.json
+        echo "zip=$zip" >> "$GITHUB_OUTPUT"
+        echo "tar=$tar" >> "$GITHUB_OUTPUT"
+
+    - name: Publish GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ steps.version.outputs.version }}
+        NOTES: ${{ inputs.notes }}
+      run: |
+        set -euo pipefail
+        tag="v${VERSION}"
+        {
+          echo "K2 build of ${GITHUB_REPOSITORY} at ${GITHUB_SHA::7}."
+          echo
+          if [ -n "$NOTES" ]; then echo "$NOTES"; echo; fi
+          echo "Install on the printer: \`bootstrap --replace helixscreen\`"
+        } > notes.md
+        cd releases
+        sha256sum helixscreen-k2.zip "helixscreen-k2-${tag}.tar.gz" > SHA256SUMS.txt
+        cd ..
+        gh release create "$tag" \
+          "${{ steps.assets.outputs.zip }}" \
+          "${{ steps.assets.outputs.tar }}" \
+          releases/SHA256SUMS.txt \
+          --target "$GITHUB_SHA" \
+          --title "HelixScreen K2 ${tag}" \
+          --notes-file notes.md \
+          --latest
