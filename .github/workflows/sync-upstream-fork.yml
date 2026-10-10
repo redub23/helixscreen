@@ -1,0 +1,94 @@
+# Daily: merge prestonbrown/helixscreen main into a branch and open (or
+# update) a pull request against this fork's main. Nothing reaches main until
+# the pull request is merged. After merging, run "K2 fork release" to build a
+# new K2 package.
+name: Upstream sync (fork)
+
+on:
+  schedule:
+    - cron: '45 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    name: Check & Sync Upstream
+    if: github.repository != 'prestonbrown/helixscreen'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch Upstream
+        run: |
+          git remote add upstream https://github.com/prestonbrown/helixscreen.git || git remote set-url upstream https://github.com/prestonbrown/helixscreen.git
+          git fetch upstream main
+
+      - name: Check for new commits
+        id: check
+        run: |
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date with upstream/main."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=$(git rev-parse --short upstream/main)" >> "$GITHUB_OUTPUT"
+            echo "upstream_version=$(git show upstream/main:VERSION.txt | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        if: steps.check.outputs.has_changes == 'true'
+        id: sync
+        run: |
+          if git merge upstream/main --no-edit; then
+            echo "sync_status=clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "sync_status=conflicts" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U | sed 's/^/- /' > conflicts.txt
+            git add -A
+            git reset -q conflicts.txt
+            git commit -m "chore(upstream): merge upstream with conflict markers for review" || true
+          fi
+          {
+            echo "conflicts<<EOF"
+            cat conflicts.txt 2>/dev/null || true
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          rm -f conflicts.txt
+
+      - name: Create or Update Pull Request
+        if: steps.check.outputs.has_changes == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base: main
+          branch: automated-upstream-sync
+          title: "chore(upstream): sync prestonbrown/helixscreen ${{ steps.check.outputs.upstream_version }} (${{ steps.check.outputs.upstream_sha }})"
+          commit-message: "chore(upstream): sync changes from prestonbrown/helixscreen"
+          body: |
+            ## Automated Upstream Sync
+
+            Merges `prestonbrown/helixscreen` main at `${{ steps.check.outputs.upstream_sha }}` (VERSION.txt `${{ steps.check.outputs.upstream_version }}`).
+
+            ### Status: ${{ steps.sync.outputs.sync_status == 'clean' && '✅ Clean Merge' || '⚠️ Conflicts Detected (Review Required)' }}
+
+            ${{ steps.sync.outputs.conflicts }}
+
+            Fork-specific files to keep: `.github/workflows/k2-fork-release.yml`, the update source in `src/system/update_checker.cpp` / `include/system/update_checker.h`, `HELIX_RELEASE_OWNER` in `mk/cross.mk`, and the Fork-dialect tool routing in `src/printer/ams_backend_cfs.cpp`.
+
+            ### After merging
+            Actions → **K2 fork release** → Run workflow. When the release is published, update HelixScreen from Fluidd's update manager or run `bootstrap --replace helixscreen` on the printer.
+          labels: |
+            upstream-sync
+            automated
