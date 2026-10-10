@@ -6139,9 +6139,10 @@ TEST_CASE("CFS fork: a bay no box reported is refused", "[ams][cfs][fork][1464]"
     }
 }
 
-// box.py registers no BOX_MODIFY_TN, so a remap on Fork would error and move
-// nothing. The UI asks can_remap() before offering the pick.
-TEST_CASE("CFS fork: tool remapping is not offered", "[ams][cfs][fork][1464]") {
+// The Fork box.py has no BOX_MODIFY_TN; its tool table is BOX_SET_ROUTING,
+// published back as `tool_routing`. MERGE=1 keeps routes the call does not
+// name, because the print-start flow sends one remap per tool.
+TEST_CASE("CFS fork: tool remap goes through BOX_SET_ROUTING", "[ams][cfs][fork][remap]") {
     CfsRemapHelper stock;
     CfsTestAccess::handle_status(stock, make_cfs_notification(make_multi_unit_box(1)));
     CHECK(helix::printer::can_remap(stock));
@@ -6149,9 +6150,45 @@ TEST_CASE("CFS fork: tool remapping is not offered", "[ams][cfs][fork][1464]") {
     CfsRemapHelper fork;
     fork.mark_running();
     CfsTestAccess::handle_status(fork, make_cfs_notification(make_flat_fork_box()));
-    CHECK_FALSE(helix::printer::can_remap(fork));
-    CHECK(fork.set_tool_mapping(0, 1).result == AmsResult::NOT_SUPPORTED);
-    CHECK(fork.captured.empty());
+    CHECK(helix::printer::can_remap(fork));
+    REQUIRE(fork.set_tool_mapping(0, 1).result == AmsResult::SUCCESS);
+    REQUIRE(fork.captured.size() == 1);
+    CHECK(fork.captured[0] == "BOX_SET_ROUTING MERGE=1 T0=1");
+    // Optimistic local update: T0 now sources slot 1.
+    const auto mapping = fork.get_tool_mapping();
+    REQUIRE(mapping.size() >= 1);
+    CHECK(mapping[0] == 1);
+}
+
+TEST_CASE("CFS fork: tool_routing drives the published tool map", "[ams][cfs][fork][remap]") {
+    CfsRemapHelper fork;
+    fork.mark_running();
+    json box = make_flat_fork_box();
+    box["tool_routing"] = json::object({{"0", 2}});
+    CfsTestAccess::handle_status(fork, make_cfs_notification(box));
+    {
+        const auto mapping = fork.get_tool_mapping();
+        REQUIRE(mapping.size() >= 1);
+        CHECK(mapping[0] == 2);
+    }
+    const uint64_t before = fork.firmware_tool_mapping_generation();
+
+    SECTION("a delta carrying only tool_routing updates the map") {
+        CfsTestAccess::handle_status(
+            fork, make_cfs_notification(json::object({{"tool_routing", {{"0", 3}}}})));
+        const auto mapping = fork.get_tool_mapping();
+        REQUIRE(mapping.size() >= 1);
+        CHECK(mapping[0] == 3);
+        CHECK(fork.firmware_tool_mapping_generation() > before);
+    }
+
+    SECTION("the table clearing at print end returns to identity") {
+        CfsTestAccess::handle_status(
+            fork, make_cfs_notification(json::object({{"tool_routing", json::object()}})));
+        const auto mapping = fork.get_tool_mapping();
+        REQUIRE(mapping.size() >= 1);
+        CHECK(mapping[0] == 0);
+    }
 }
 
 namespace {

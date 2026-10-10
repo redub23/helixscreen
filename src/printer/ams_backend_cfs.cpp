@@ -1020,6 +1020,43 @@ AmsBackendCfs::parse_stock_box_status(const nlohmann::json& box_json,
 // because SlotInfo has no other way to say "no colour": the external-spool
 // entry writes the key empty (Cleared) and a malformed value is refused rather
 // than half-read (NoReading), and a bay renders as "unknown colour" for either.
+// The Fork dialect publishes its slicer-tool routing as `tool_routing`, an
+// object of "<tool>": <firmware slot> pairs set by BOX_SET_ROUTING (empty when
+// every tool feeds its own slot). Returns the forward map it states, or
+// nullopt when the field is absent or not an object, so a frame that does not
+// carry it leaves the published mapping alone.
+static std::optional<std::vector<int>> parse_fork_tool_routing(const nlohmann::json& box_json) {
+    auto it = box_json.find("tool_routing");
+    if (it == box_json.end() || !it->is_object()) {
+        return std::nullopt;
+    }
+    std::vector<int> forward;
+    for (auto& [key, value] : it->items()) {
+        int tool = -1;
+        try {
+            size_t used = 0;
+            tool = std::stoi(key, &used);
+            if (used != key.size()) {
+                tool = -1;
+            }
+        } catch (...) {
+            tool = -1;
+        }
+        if (tool < 0 || tool > 255 || !value.is_number_integer()) {
+            continue;
+        }
+        const int slot = value.get<int>();
+        if (slot < 0) {
+            continue;
+        }
+        if (static_cast<int>(forward.size()) <= tool) {
+            forward.resize(static_cast<size_t>(tool) + 1, -1);
+        }
+        forward[static_cast<size_t>(tool)] = slot;
+    }
+    return forward;
+}
+
 static uint32_t parse_flat_slot_color(const std::string& raw) {
     const auto reading = helix::ams::read_lane_color(raw);
     return reading.kind == helix::ams::ColorReadingKind::Observed ? reading.rgb
@@ -1269,8 +1306,12 @@ AmsSystemInfo AmsBackendCfs::parse_flat_box_status(const nlohmann::json& box_jso
     }
 
     // Same single-writer pass as the stock parse. The flat payload carries no
-    // `map`, so tool_to_slot_map is empty here and identity_fallback supplies
-    // the 1:1 default in BOTH directions rather than in one of them.
+    // `map`; the Fork dialect states its remaps in `tool_routing` instead, and
+    // identity_fallback supplies the 1:1 default for every tool it leaves out,
+    // in BOTH directions rather than in one of them.
+    if (auto routing = parse_fork_tool_routing(box_json)) {
+        info.tool_to_slot_map = std::move(*routing);
+    }
     sync_tool_map_from_forward(info, /*identity_fallback=*/true);
     unmap_absent_bays(info);
 
@@ -1589,6 +1630,25 @@ void AmsBackendCfs::handle_box_frame(const nlohmann::json& box, bool print_holds
             stock_box_state_ = nlohmann::json::object();
         }
         stock_box_state_.merge_patch(box);
+    }
+
+    // Fork routing is the firmware's own statement of the tool map, so it
+    // ticks the same confirmation counter box.map does for stock firmware.
+    // A full flat frame carries it into the parse below; a delta naming only
+    // `tool_routing` (BOX_SET_ROUTING, or the table clearing at print end)
+    // never reaches that parse, so it is applied here on its own.
+    if (macro_variant_ == CfsMacroVariant::Fork) {
+        if (auto routing = parse_fork_tool_routing(box)) {
+            ++firmware_map_generation_;
+            if (!is_full_update) {
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    system_info_.tool_to_slot_map = std::move(*routing);
+                    sync_tool_map_from_forward(system_info_, /*identity_fallback=*/true);
+                }
+                emit_event(EVENT_STATE_CHANGED);
+            }
+        }
     }
 
     // Partial updates (measuring_wheel, etc.): skip — don't touch state
@@ -2991,7 +3051,16 @@ AmsError AmsBackendCfs::set_tool_mapping_impl(int tool_number, int slot_index) {
         }
     }
 
-    std::string cmd = "BOX_MODIFY_TN " + tool_tnn + "=" + slot_tnn;
+    // The Fork dialect has no BOX_MODIFY_TN; its table is BOX_SET_ROUTING,
+    // keyed by plain tool and firmware slot numbers. MERGE=1 keeps the routes
+    // this call does not name, since the print-start flow sends one remap per
+    // tool. (Older box.py ignores MERGE and replaces the table, which is still
+    // right for single-tool prints.) The firmware clears the table when the
+    // print ends.
+    std::string cmd = macro_variant_ == CfsMacroVariant::Fork
+                          ? "BOX_SET_ROUTING MERGE=1 T" + std::to_string(tool_number) + "=" +
+                                std::to_string(slot_index)
+                          : "BOX_MODIFY_TN " + tool_tnn + "=" + slot_tnn;
     spdlog::info("[AMS CFS] Remapping tool {} -> slot {} ({})", tool_tnn, slot_tnn, cmd);
     if (macro_variant_ == CfsMacroVariant::K1) {
         // #968 — this is NOT a no-op on K1, despite the reporter observing that
