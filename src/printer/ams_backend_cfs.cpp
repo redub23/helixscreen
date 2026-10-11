@@ -1032,16 +1032,7 @@ static std::optional<std::vector<int>> parse_fork_tool_routing(const nlohmann::j
     }
     std::vector<int> forward;
     for (auto& [key, value] : it->items()) {
-        int tool = -1;
-        try {
-            size_t used = 0;
-            tool = std::stoi(key, &used);
-            if (used != key.size()) {
-                tool = -1;
-            }
-        } catch (...) {
-            tool = -1;
-        }
+        const int tool = helix::text_io::parse_int<int>(key).value_or(-1);
         if (tool < 0 || tool > 255 || !value.is_number_integer()) {
             continue;
         }

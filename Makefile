@@ -234,6 +234,11 @@ VERSION_DEFINES := -DHELIX_VERSION=\"$(HELIX_VERSION)\" \
                    -DINSTALLER_FILENAME=\"$(INSTALLER_FILENAME)\"
 CFLAGS += $(VERSION_DEFINES)
 CXXFLAGS += $(VERSION_DEFINES)
+# Release CDN override for forks that publish only to GitHub releases:
+# `make HELIX_R2_BASE_URL=` (empty) turns the R2 manifest lookup off.
+ifneq ($(origin HELIX_R2_BASE_URL),undefined)
+CXXFLAGS += -DHELIX_DEFAULT_R2_BASE_URL=\"$(HELIX_R2_BASE_URL)\"
+endif
 
 # Strict mode: -Werror plus additional useful warnings
 ifeq ($(WERROR),1)

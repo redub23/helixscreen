@@ -84,12 +84,16 @@ class IMoonrakerAPI; // NAMESPACE_OK: forward-declares the global interface
  * checker.shutdown();
  * @endcode
  */
+#ifndef HELIX_DEFAULT_R2_BASE_URL
+#define HELIX_DEFAULT_R2_BASE_URL "https://releases.helixscreen.org"
+#endif
+
 class UpdateChecker {
   public:
-    /// No CDN for this fork's builds: an empty base skips the R2 manifest and
-    /// the stable/beta checks read GitHub releases of HELIX_UPDATE_REPO.
-    /// state_dir/update_urls.json can still name one.
-    static constexpr const char* DEFAULT_R2_BASE_URL = "";
+    /// Release CDN. A fork's release build passes HELIX_R2_BASE_URL= (empty)
+    /// to make, which skips the R2 manifest so stable/beta read the GitHub
+    /// releases of HELIX_UPDATE_REPO. state_dir/update_urls.json overrides it.
+    static constexpr const char* DEFAULT_R2_BASE_URL = HELIX_DEFAULT_R2_BASE_URL;
 
     /**
      * @brief Release information from GitHub

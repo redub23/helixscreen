@@ -109,7 +109,8 @@ jobs:
           -w /src \
           helixscreen/toolchain-k2 \
           make PLATFORM_TARGET=k2 HELIX_PACKAGING=1 SKIP_OPTIONAL_DEPS=1 \
-            HELIX_RELEASE_OWNER=${{ github.repository_owner }} -j$(nproc)
+            HELIX_RELEASE_OWNER=${{ github.repository_owner }} HELIX_R2_BASE_URL= \
+            -j$(nproc)
 
     - name: Fix build directory ownership
       run: sudo chown -R $(id -u):$(id -g) build/
